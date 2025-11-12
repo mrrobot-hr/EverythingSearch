@@ -1,0 +1,251 @@
+﻿@page
+@model EverythingSearch.Pages.IndexModel
+@{
+    Layout = null;
+}
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>DOM'S SEARCH</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 40px;
+        }
+
+        input[type="text"] {
+            width: 400px;
+            padding: 10px;
+            font-size: 18px;
+        }
+
+        button {
+            padding: 10px 15px;
+            font-size: 16px;
+            cursor: pointer;
+            margin-left: 5px;
+        }
+
+        #loading {
+            display: none;
+            margin-top: 10px;
+            font-style: italic;
+            color: #555;
+        }
+
+        #description {
+            font-size: 0.9em;
+            color: #666;
+            margin-bottom: 20px;
+            max-width: 600px;
+        }
+
+        .server {
+            display: inline-block;
+            margin-right: 10px;
+            font-weight: bold;
+        }
+
+        .online {
+            color: green;
+        }
+
+        .offline {
+            color: red;
+        }
+
+        table {
+            width: 100%;
+            margin-top: 20px;
+            border-collapse: collapse;
+        }
+
+        th, td {
+            text-align: left;
+            padding: 8px;
+            border-bottom: 1px solid #ddd;
+        }
+
+        tr:hover {
+            background-color: #f0f0f0;
+        }
+
+        .source {
+            font-size: 0.9em;
+            color: #666;
+        }
+
+        a {
+            color: #007acc;
+            text-decoration: none;
+        }
+
+            a:hover {
+                text-decoration: underline;
+            }
+    </style>
+</head>
+<body>
+    <h1>SEARCH</h1>
+    <h4>SERVERS ONLINE</h4>
+    <div id="description">Checking server status...</div>
+
+    <div>
+        <input type="text" id="searchBox" placeholder="Type to search (min 2 characters)" autofocus />
+        <button id="searchBtn">Search</button>
+    </div>
+    <div id="loading">Loading...</div>
+
+    <table id="resultsTable">
+        <thead>
+            <tr>
+                <th>File Name</th>
+                <th>Source</th>
+                <th>Path</th>
+            </tr>
+        </thead>
+        <tbody id="resultsBody"></tbody>
+    </table>
+
+    <script>
+        const servers = ["laptop", "spansko", "obreska"]; 
+        const searchBox = document.getElementById("searchBox");
+        const searchBtn = document.getElementById("searchBtn");
+        const resultsBody = document.getElementById("resultsBody");
+        const loading = document.getElementById("loading");
+        const description = document.getElementById("description");
+
+        // --- Utility: escape HTML safely ---
+        function escapeHTML(str) {
+            if (typeof str !== "string") return '';
+            return str.replace(/[&<>\"']/g, match => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#039;'
+            }[match]));
+        }
+
+        // --- Render server list with online/offline status ---
+        async function checkServers() {
+            description.innerHTML = "";
+            const statusPromises = servers.map(server => {
+                const span = document.createElement("span");
+                span.className = "server";
+                span.textContent = server;
+                description.appendChild(span);
+
+                // Start checking asynchronously (non-blocking)
+                fetch(`/proxy?host=${server}&check=1`)
+                    .then(res => {
+                        if (res.ok) {
+                            span.classList.add("online");
+                            span.title = "Online";
+                        } else {
+                            span.classList.add("offline");
+                            span.title = "Offline";
+                        }
+                    })
+                    .catch(() => {
+                        span.classList.add("offline");
+                        span.title = "Offline";
+                    });
+            });
+
+            await Promise.allSettled(statusPromises);
+        }
+
+        // --- Render search results table ---
+        function renderResults(allResults) {
+            resultsBody.innerHTML = "";
+            if (!allResults.length) {
+                resultsBody.innerHTML = "<tr><td colspan='3'>No results found.</td></tr>";
+                return;
+            }
+
+            allResults.forEach(r => {
+                const source = r.source ? escapeHTML(r.source) : '[Unknown]';
+                let folderPath = (r.path || '').replace(/\\/g, '/');
+                if (r.name && folderPath.endsWith(r.name)) {
+                    folderPath = folderPath.slice(0, folderPath.length - r.name.length);
+                    if (folderPath.endsWith('/')) folderPath = folderPath.slice(0, -1);
+                }
+
+                const combinedPath = ((r.path || '') + '/' + (r.name || '')).replace(/\\/g, '/');
+                const encodedFilePath = encodeURIComponent(combinedPath).replace(/%2F/g, '/');
+                const fileUrl = `http://${source}:888/${encodedFilePath}`;
+
+                const encodedFolder = encodeURIComponent(folderPath).replace(/%2F/g, '/');
+                const folderUrl = `http://${source}:888/${encodedFolder}`;
+
+                const safeName = r.name ? escapeHTML(r.name) : '[No Name]';
+                const safePath = folderPath ? escapeHTML(folderPath) : '[No Path]';
+
+                const row = document.createElement("tr");
+                row.innerHTML = `
+                    <td><a href="${fileUrl}" target="_blank" rel="noopener noreferrer">${safeName}</a></td>
+                    <td class="source">${source}</td>
+                    <td><a href="${folderUrl}" target="_blank" rel="noopener noreferrer">${safePath}</a></td>
+                `;
+                resultsBody.appendChild(row);
+            });
+        }
+
+        // --- Perform a search across all servers ---
+        async function search() {
+            const query = searchBox.value.trim();
+            if (query.length < 2) {
+                renderResults([]);
+                return;
+            }
+
+            loading.style.display = "block";
+            const params = new URLSearchParams({
+                search: query,
+                sort: "date_modified",
+                ascending: "0",
+                json: "1",
+                path: "1",
+                path_column: "1"
+            });
+
+            const requests = servers.map(server =>
+                fetch(`/proxy?host=${server}&${params}`)
+                    .then(res => res.ok ? res.json() : Promise.reject(`Fail: ${server}`))
+                    .then(data => (data.results || []).map(item => ({ ...item, source: server })))
+                    .catch(err => {
+                        console.warn(`Server ${server} failed:`, err);
+                        return [];
+                    })
+            );
+
+            let allResults = [];
+            for (const req of requests) {
+                req.then(serverResults => {
+                    allResults = allResults.concat(serverResults);
+                    allResults.sort((a, b) => a.name.localeCompare(b.name));
+                    renderResults(allResults);
+                });
+            }
+
+            await Promise.allSettled(requests);
+            loading.style.display = "none";
+        }
+
+        // --- Event bindings ---
+        searchBox.addEventListener("keydown", e => {
+            if (e.key === "Enter") {
+                e.preventDefault();
+                search();
+            }
+        });
+        searchBtn.addEventListener("click", search);
+
+        // --- Initial server check ---
+        checkServers();
+    </script>
+</body>
+</html>
